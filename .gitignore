@@ -1,0 +1,5 @@
+build/
+*.o
+*.a
+*.so
+parallel_bfs
