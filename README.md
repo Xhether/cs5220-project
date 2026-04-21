@@ -3,9 +3,9 @@
 module load PrgEnv-gnu
 module load cmake
 
+mkdir build
 cd build
-
-run cmake ..
+cmake ..
 
 ### **To compile**
 
