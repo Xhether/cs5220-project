@@ -13,5 +13,9 @@ echo "Downloading com-LiveJournal..."
 wget -nc https://snap.stanford.edu/data/soc-LiveJournal1.txt.gz
 gunzip -f soc-LiveJournal1.txt.gz
 
+echo "Downloading ca-GrQc (small debug graph)..."
+wget -nc https://snap.stanford.edu/data/ca-GrQc.txt.gz
+gunzip -f ca-GrQc.txt.gz
+
 echo "Done. Graphs are in $SCRATCH/graphs/"
 ls -lh $SCRATCH/graphs/
