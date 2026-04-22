@@ -10,8 +10,8 @@ wget -nc https://snap.stanford.edu/data/roadNet-CA.txt.gz
 gunzip -f roadNet-CA.txt.gz
 
 echo "Downloading com-LiveJournal..."
-wget -nc https://snap.stanford.edu/data/soc-LiveJournal1.txt.gz
-gunzip -f soc-LiveJournal1.txt.gz
+wget -nc https://snap.stanford.edu/data/bigdata/communities/com-lj.ungraph.txt.gz
+gunzip -f com-lj.ungraph.txt.gz
 
 echo "Downloading ca-GrQc (small debug graph)..."
 wget -nc https://snap.stanford.edu/data/ca-GrQc.txt.gz
