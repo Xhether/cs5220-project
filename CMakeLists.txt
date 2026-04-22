@@ -36,3 +36,8 @@ target_compile_options(parallel_bfs PRIVATE
     -Wall 
     -Wextra 
 )
+
+# serial reference — no MPI, just plain C++
+add_executable(serial_reference
+    reference/dijkstra.cpp
+)
