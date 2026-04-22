@@ -16,7 +16,7 @@ set(SOURCES
     src/bfs_2d.cpp
     src/sssp_1d.cpp     
     src/sssp_2d.cpp
-    src/graphs.cpp
+    src/graph_utils.cpp
 )
 
 # Define the executable
