@@ -9,7 +9,6 @@
 #include <climits>
 #include <cstdint>
 #include <cstdio>
-#include <mpi.h>
 
 // ─── Ownership / index arithmetic ────────────────────────────────────────────
 
@@ -51,7 +50,7 @@ double weight_of(int64_t u, int64_t v) {
     h *= 0x94d049bb133111ebULL;
     h ^= h >> 31;
 
-    return (double)(h % 100) + 1.0;
+    return (double)(h % 100) + 1.0; // [1, 100]
 }
 
 // ─── Graph loading ────────────────────────────────────────────────────────────
