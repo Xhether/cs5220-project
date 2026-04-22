@@ -20,7 +20,10 @@ int main(int argc, char** argv) {
     bool weighted = (argc >= 3 && std::string(argv[2]) == "weighted");
 
     try {
-        CSRGraph g = load_snap_graph(filename, weighted, MPI_COMM_WORLD);
+        CSRGraph full;
+        if (rank == 0)
+            full = load_snap_graph_serial(filename, weighted);
+        CSRGraph g = distribute_graph_1d(full, MPI_COMM_WORLD);
         print_graph_stats(g, MPI_COMM_WORLD);
     } catch (const std::exception& e) {
         if (rank == 0)
