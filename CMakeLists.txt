@@ -41,4 +41,13 @@ target_compile_options(parallel_bfs PRIVATE
 # serial reference — no MPI, just plain C++
 add_executable(serial_reference
     reference/dijkstra.cpp
+    src/graph_utils.cpp
+)
+
+target_include_directories(serial_reference PRIVATE include)
+target_link_libraries(serial_reference PRIVATE MPI::MPI_CXX)
+target_compile_options(serial_reference PRIVATE
+    -O3
+    -Wall
+    -Wextra
 )
