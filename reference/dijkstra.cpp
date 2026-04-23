@@ -1,124 +1,21 @@
-#include <algorithm>
+#include "../include/graph_utils.h"
+
 #include <chrono>
-#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <queue>
-#include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <vector>
-
-// ─── Weight function (mirrors graph_utils.cpp exactly) ───────────────────────
-
-static double weight_of(int64_t u, int64_t v) {
-    int64_t lo = (u < v) ? u : v;
-    int64_t hi = (u < v) ? v : u;
-    uint64_t h = (uint64_t)lo * 6364136223846793005ULL
-               + (uint64_t)hi * 1442695040888963407ULL;
-    h ^= h >> 30;
-    h *= 0xbf58476d1ce4e5b9ULL;
-    h ^= h >> 27;
-    h *= 0x94d049bb133111ebULL;
-    h ^= h >> 31;
-    return (double)(h % 100) + 1.0;
-}
-
-// ─── CSR graph (single-rank, no MPI) ─────────────────────────────────────────
-
-struct CSRGraph {
-    int64_t n;                      // vertex count
-    int64_t m;                      // edge count (both directions)
-    std::vector<int64_t> offsets;   // size n+1
-    std::vector<int64_t> neighbors; // size m
-    std::vector<double>  weights;   // size m; empty when unweighted
-};
-
-// Reads SNAP edge list, symmetrizes, deduplicates, remaps to 0-based IDs,
-// and builds a CSR. Matches the logic in load_snap_graph from graph_utils.cpp.
-static CSRGraph load_graph(const std::string& filename, bool assign_weights) {
-    std::ifstream fin(filename);
-    if (!fin.is_open())
-        throw std::runtime_error("Cannot open graph file: " + filename);
-
-    std::vector<std::pair<int64_t,int64_t>> raw_edges;
-    std::vector<int64_t> all_vertices;
-
-    std::string line;
-    while (std::getline(fin, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream ss(line);
-        int64_t u, v;
-        if (!(ss >> u >> v)) continue;
-        if (u == v) continue;
-        raw_edges.push_back({u, v});
-        all_vertices.push_back(u);
-        all_vertices.push_back(v);
-    }
-
-    // Compact vertex remapping (SNAP files can have gaps)
-    std::sort(all_vertices.begin(), all_vertices.end());
-    all_vertices.erase(std::unique(all_vertices.begin(), all_vertices.end()),
-                       all_vertices.end());
-
-    std::unordered_map<int64_t,int64_t> remap;
-    remap.reserve(all_vertices.size());
-    for (int64_t i = 0; i < (int64_t)all_vertices.size(); i++)
-        remap[all_vertices[i]] = i;
-
-    int64_t n = (int64_t)all_vertices.size();
-
-    // Remap + symmetrize
-    size_t orig = raw_edges.size();
-    raw_edges.reserve(orig * 2);
-    for (size_t i = 0; i < orig; i++) {
-        int64_t u = remap[raw_edges[i].first];
-        int64_t v = remap[raw_edges[i].second];
-        raw_edges[i] = {u, v};
-        raw_edges.push_back({v, u});
-    }
-
-    std::sort(raw_edges.begin(), raw_edges.end());
-    raw_edges.erase(std::unique(raw_edges.begin(), raw_edges.end()),
-                    raw_edges.end());
-
-    int64_t m = (int64_t)raw_edges.size();
-
-    // Build CSR
-    CSRGraph g;
-    g.n = n;
-    g.m = m;
-    g.offsets.assign(n + 1, 0);
-
-    for (auto& [u, v] : raw_edges)
-        g.offsets[u + 1]++;
-    for (int64_t i = 1; i <= n; i++)
-        g.offsets[i] += g.offsets[i - 1];
-
-    g.neighbors.resize(m);
-    std::vector<int64_t> cursor(g.offsets.begin(), g.offsets.end());
-    for (auto& [u, v] : raw_edges)
-        g.neighbors[cursor[u]++] = v;
-
-    if (assign_weights) {
-        g.weights.resize(m);
-        for (int64_t u = 0; u < n; u++)
-            for (int64_t j = g.offsets[u]; j < g.offsets[u + 1]; j++)
-                g.weights[j] = weight_of(u, g.neighbors[j]);
-    }
-
-    return g;
-}
 
 // ─── Dijkstra ─────────────────────────────────────────────────────────────────
 
 static std::vector<double> dijkstra(const CSRGraph& g, int64_t source,
                                     bool unweighted) {
     const double INF = std::numeric_limits<double>::infinity();
-    std::vector<double> dist(g.n, INF);
+    std::vector<double> dist(g.n_global, INF);
     dist[source] = 0.0;
 
     using Entry = std::pair<double, int64_t>; // (dist, vertex)
@@ -183,21 +80,21 @@ int main(int argc, char* argv[]) {
 
     CSRGraph g;
     try {
-        g = load_graph(graph_file, !unweighted);
+        g = load_snap_graph_serial(graph_file, !unweighted);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     }
 
     auto t1 = std::chrono::steady_clock::now();
-    std::cerr << "Vertices: " << g.n << "\n";
-    std::cerr << "Edges:    " << g.m << "\n";
+    std::cerr << "Vertices: " << g.n_global << "\n";
+    std::cerr << "Edges:    " << g.m_global << "\n";
     std::cerr << "Load time: "
               << std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()
               << " ms\n";
 
-    if (source < 0 || source >= g.n) {
-        std::cerr << "Error: source " << source << " out of range [0, " << g.n << ")\n";
+    if (source < 0 || source >= g.n_global) {
+        std::cerr << "Error: source " << source << " out of range [0, " << g.n_global << ")\n";
         return 1;
     }
 
@@ -227,7 +124,7 @@ int main(int argc, char* argv[]) {
     std::ostream out(buf);
 
     const double INF = std::numeric_limits<double>::infinity();
-    for (int64_t v = 0; v < g.n; v++) {
+    for (int64_t v = 0; v < g.n_global; v++) {
         if (dist[v] == INF)
             out << v << " INF\n";
         else
