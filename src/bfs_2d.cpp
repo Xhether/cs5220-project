@@ -130,8 +130,15 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
             int64_t parent = t_parents[u_local];
             if (parent == -1) continue;
             int64_t u = g.row_start + u_local;
-            int j_dest = (int)(((u - g.row_start) * (int64_t)R) / row_band_size);
+            // Invert the pc-partition (pc*size)/R with an adjust loop — a plain
+            // (offset*R)/size undershoots on exact boundary vertices. Mirrors
+            // graph_utils.cpp:owner_of.
+            int64_t off = u - g.row_start;
+            int j_dest = (int)((off * (int64_t)R) / row_band_size);
+            if (j_dest < 0) j_dest = 0;
             if (j_dest >= R) j_dest = R - 1;
+            while (j_dest + 1 < R && ((int64_t)(j_dest + 1) * row_band_size) / R <= off)
+                j_dest++;
             row_buckets[j_dest].push_back(u);
             row_buckets[j_dest].push_back(parent);
         }
@@ -144,6 +151,7 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
             int64_t u      = recv_pairs[i];
             int64_t parent = recv_pairs[i + 1];
             int64_t u_local = u - vec_start;
+            if (u_local < 0 || u_local >= n_vec_local) continue;  // routing bug guard
             if (parents[u_local] == -1) {
                 parents[u_local] = parent;
                 new_frontier.push_back(u);
