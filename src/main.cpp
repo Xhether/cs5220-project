@@ -8,12 +8,14 @@
 #include <string>
 #include <vector>
 
+#include "bfs_1d.h"
 #include "bfs_2d.h"
 #include "graph_utils.h"
 
 static void usage(const char* prog, std::ostream& out) {
     out << "Usage:\n"
         << "  " << prog << " <graph_file> stats1d [weighted]\n"
+        << "  " << prog << " <graph_file> bfs1d <source>\n"
         << "  " << prog << " <graph_file> bfs2d <source> [output_file]\n";
 }
 
@@ -23,6 +25,29 @@ static int run_stats1d(const std::string& filename, int rank, int argc, char** a
     if (rank == 0) full = load_snap_graph_serial(filename, weighted);
     CSRGraph g = distribute_graph_1d(full, MPI_COMM_WORLD);
     print_graph_stats(g, MPI_COMM_WORLD);
+    return 0;
+}
+
+static int run_bfs1d(const std::string& filename, int rank, int argc, char** argv) {
+    if (argc < 4) {
+        if (rank == 0) std::cerr << "Error: bfs1d requires <source>\n";
+        return 1;
+    }
+    int64_t source = std::stoll(argv[3]);
+
+    CSRGraph full;
+    if (rank == 0) full = load_snap_graph_serial(filename, false);
+    CSRGraph g = distribute_graph_1d(full, MPI_COMM_WORLD);
+
+    if (source < 0 || source >= g.n_global) {
+        if (rank == 0)
+            std::cerr << "Error: source " << source << " out of range [0, "
+                      << g.n_global << ")\n";
+        return 1;
+    }
+
+    std::vector<int64_t> d;
+    bfs_1d(g, source, d);
     return 0;
 }
 
@@ -150,6 +175,8 @@ int main(int argc, char** argv) {
     try {
         if (mode == "stats1d")
             ret = run_stats1d(filename, rank, argc, argv);
+        else if (mode == "bfs1d")
+            ret = run_bfs1d(filename, rank, argc, argv);
         else if (mode == "bfs2d")
             ret = run_bfs2d(filename, rank, p, argc, argv);
         else {
