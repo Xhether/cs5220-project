@@ -11,7 +11,7 @@
 #include <cstdio>
 
 // ─── Ownership / index arithmetic ────────────────────────────────────────────
-
+// what rank owns vertex global_vertex given n_global vertices and p ranks 
 int owner_of(int64_t global_vertex, int64_t n_global, int p) {
     int r = (int)((global_vertex * (int64_t)p) / n_global);
     if (r >= p) r = p - 1;

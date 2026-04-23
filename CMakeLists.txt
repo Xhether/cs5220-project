@@ -17,6 +17,7 @@ set(SOURCES
     src/sssp_1d.cpp     
     src/sssp_2d.cpp
     src/graph_utils.cpp
+    src/mpi_utils.cpp
 )
 
 # Define the executable
