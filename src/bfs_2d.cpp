@@ -11,13 +11,17 @@ void bfs_2d_vec_range(const CSRGraph2D& g, int64_t* vec_start, int64_t* vec_end)
     *vec_end   = g.row_start + ((int64_t)(g.pc + 1) * row_band_size) / g.grid_cols;
 }
 
-std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) {
+std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm,
+                            BFSTiming* timing) {
     int rank, p;
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &p);
 
     if (g.grid_rows != g.grid_cols)
         throw std::runtime_error("bfs_2d: requires a square processor grid (grid_rows == grid_cols)");
+
+    double t_total_start = MPI_Wtime();
+    double t_comm = 0.0;
 
     const int R = g.grid_rows;       // == grid_cols
     const int pr = g.pr;
@@ -73,7 +77,9 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
         // ── Termination: any frontier non-empty? ─────────────────────────────
         int64_t local_fsize  = (int64_t)frontier.size();
         int64_t global_fsize = 0;
+        double tc1 = MPI_Wtime();
         MPI_Allreduce(&local_fsize, &global_fsize, 1, MPI_INT64_T, MPI_SUM, comm);
+        t_comm += MPI_Wtime() - tc1;
         if (global_fsize == 0) break;
 
         // ── Step 1: TransposeVector — pairwise swap (i,j) ↔ (j,i) ────────────
@@ -83,6 +89,7 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
         } else {
             int local_size = (int)frontier.size();
             int partner_size = 0;
+            tc1 = MPI_Wtime();
             MPI_Sendrecv(&local_size,   1, MPI_INT, partner_rank, 0,
                          &partner_size, 1, MPI_INT, partner_rank, 0,
                          comm, MPI_STATUS_IGNORE);
@@ -90,22 +97,27 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
             MPI_Sendrecv(frontier.data(),     local_size,   MPI_INT64_T, partner_rank, 1,
                          f_transposed.data(), partner_size, MPI_INT64_T, partner_rank, 1,
                          comm, MPI_STATUS_IGNORE);
+            t_comm += MPI_Wtime() - tc1;
         }
 
         // ── Step 2: Allgatherv on col_comm → fi (full col band j) ────────────
         int local_count = (int)f_transposed.size();
         std::vector<int> ag_counts(R), ag_displs(R);
+        tc1 = MPI_Wtime();
         MPI_Allgather(&local_count, 1, MPI_INT,
                       ag_counts.data(), 1, MPI_INT, col_comm);
+        t_comm += MPI_Wtime() - tc1;
         int total_ag = 0;
         for (int i = 0; i < R; i++) {
             ag_displs[i] = total_ag;
             total_ag += ag_counts[i];
         }
         std::vector<int64_t> fi(total_ag);
+        tc1 = MPI_Wtime();
         MPI_Allgatherv(f_transposed.data(), local_count, MPI_INT64_T,
                        fi.data(), ag_counts.data(), ag_displs.data(), MPI_INT64_T,
                        col_comm);
+        t_comm += MPI_Wtime() - tc1;
 
         // ── Step 3: Local SpMSV (column-driven, sparse accumulator) ──────────
         // For each frontier vertex v, walk its column in the local CSC and
@@ -142,7 +154,9 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
             row_buckets[j_dest].push_back(u);
             row_buckets[j_dest].push_back(parent);
         }
+        tc1 = MPI_Wtime();
         std::vector<int64_t> recv_pairs = mpi_utils::alltoallv_exchange(row_buckets, row_comm);
+        t_comm += MPI_Wtime() - tc1;
 
         // ── Step 5: Mask + update ────────────────────────────────────────────
         std::vector<int64_t> new_frontier;
@@ -163,6 +177,16 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
 
     MPI_Comm_free(&row_comm);
     MPI_Comm_free(&col_comm);
+
+    double t_total = MPI_Wtime() - t_total_start;
+    double max_total = 0, max_comm = 0;
+    MPI_Reduce(&t_total, &max_total, 1, MPI_DOUBLE, MPI_MAX, 0, comm);
+    MPI_Reduce(&t_comm,  &max_comm,  1, MPI_DOUBLE, MPI_MAX, 0, comm);
+    if (timing && rank == 0) {
+        timing->total_time   = max_total;
+        timing->comm_time    = max_comm;
+        timing->compute_time = max_total - max_comm;
+    }
 
     return parents;
 }

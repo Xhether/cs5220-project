@@ -4,18 +4,20 @@
 #include <mpi.h>
 
 #include <cstdint>
-#include <fstream>
-#include <iostream>
 #include <limits>
 #include <utility>
 #include <vector>
 
-void bfs_1d(const CSRGraph& g, int64_t source, std::vector<int64_t>& d) {
+void bfs_1d(const CSRGraph& g, int64_t source, std::vector<int64_t>& d,
+            BFSTiming* timing) {
     int rank, p;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &p);
 
     const int64_t INF = std::numeric_limits<int64_t>::max();
+
+    double t_total_start = MPI_Wtime();
+    double t_comm = 0.0;
 
     // Initialize distances; seed the source on its owning rank.
     d.assign(g.n_local, INF);
@@ -34,7 +36,9 @@ void bfs_1d(const CSRGraph& g, int64_t source, std::vector<int64_t>& d) {
         // Step 1: termination check — global frontier size.
         int64_t local_fsize  = (int64_t)frontier.size();
         int64_t global_fsize = 0;
+        double tc1 = MPI_Wtime();
         MPI_Allreduce(&local_fsize, &global_fsize, 1, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
+        t_comm += MPI_Wtime() - tc1;
         if (global_fsize == 0) break;
 
         // Step 2: expand frontier — route every neighbor to its owner.
@@ -51,7 +55,9 @@ void bfs_1d(const CSRGraph& g, int64_t source, std::vector<int64_t>& d) {
         }
 
         // Step 3: exchange via alltoallv.
+        tc1 = MPI_Wtime();
         std::vector<int64_t> received = mpi_utils::alltoallv_exchange(packer.pack(), MPI_COMM_WORLD);
+        t_comm += MPI_Wtime() - tc1;
 
         // Step 4: build next frontier — claim unvisited vertices at this level.
         std::vector<int64_t> next_frontier;
@@ -69,35 +75,15 @@ void bfs_1d(const CSRGraph& g, int64_t source, std::vector<int64_t>& d) {
         level++;
     }
 
-    // Gather distances to rank 0 and write output (matches bfs_2d format).
-    int local_count = (int)g.n_local;
-    std::vector<int> counts, displs;
-    if (rank == 0) {
-        counts.resize(p);
-        displs.resize(p);
-    }
-    MPI_Gather(&local_count, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+    double t_total = MPI_Wtime() - t_total_start;
 
-    std::vector<int64_t> all_distances;
-    if (rank == 0) {
-        int total = 0;
-        for (int i = 0; i < p; i++) {
-            displs[i] = total;
-            total += counts[i];
-        }
-        all_distances.resize(total);
-    }
-    MPI_Gatherv(d.data(), local_count, MPI_INT64_T,
-                all_distances.data(), counts.data(), displs.data(), MPI_INT64_T,
-                0, MPI_COMM_WORLD);
-
-    if (rank == 0) {
-        std::string output_file = "bfs1d_src" + std::to_string(source) + ".txt";
-        std::ofstream fout(output_file);
-        for (int64_t v = 0; v < g.n_global; v++) {
-            if (all_distances[v] == INF) fout << v << " INF\n";
-            else                         fout << v << " " << all_distances[v] << "\n";
-        }
-        std::cerr << "Wrote BFS 1D distances to " << output_file << "\n";
+    // Reduce per-rank times to the slowest (max) across the comm.
+    double max_total = 0, max_comm = 0;
+    MPI_Reduce(&t_total, &max_total, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&t_comm,  &max_comm,  1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    if (timing && rank == 0) {
+        timing->total_time   = max_total;
+        timing->comm_time    = max_comm;
+        timing->compute_time = max_total - max_comm;
     }
 }

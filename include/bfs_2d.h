@@ -1,6 +1,7 @@
 #ifndef BFS_2D_H
 #define BFS_2D_H
 
+#include "bfs_timing.h"
 #include "graph_utils.h"
 
 #include <cstdint>
@@ -16,8 +17,11 @@ void bfs_2d_vec_range(const CSRGraph2D& g, int64_t* vec_start, int64_t* vec_end)
 // Returns the local slice of the parents array, indexed by (v - vec_start);
 // parents[i] is the predecessor of vertex (vec_start + i), or -1 if unreachable.
 // The source's slot is set to `source` itself.
+// If `timing` is non-null, fills it with the slowest-rank wall times for the
+// BFS traversal (CSC build + main loop; subsequent gather/output excluded).
 //
 // Requires grid_rows == grid_cols (square processor grid).
-std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm);
+std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm,
+                            BFSTiming* timing = nullptr);
 
 #endif
