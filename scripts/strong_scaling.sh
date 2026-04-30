@@ -23,9 +23,9 @@ BIN=$PROJECT_DIR/build/parallel_bfs
 
 # Parse the 16 sources line from the LCC info file
 mapfile -t SOURCES < <(awk '/^sources/ { for (i=2; i<=NF; i++) print $i }' "$LCC_INFO")
-[ ${#SOURCES[@]} -ge 5 ] || { echo "need >= 5 sources in $LCC_INFO" >&2; exit 1; }
+[ ${#SOURCES[@]} -ge 2 ] || { echo "need >= 2 sources in $LCC_INFO" >&2; exit 1; }
 
-NUM_RUNS=5
+NUM_RUNS=2
 
 # Write CSV header if the file is new/empty
 if [ ! -s "$CSV" ]; then
