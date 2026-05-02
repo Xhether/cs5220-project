@@ -3,8 +3,10 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <numeric>
+#include <random>
 #include <stdexcept>
 #include <climits>
 #include <cstdint>
@@ -85,12 +87,22 @@ CSRGraph load_snap_graph_serial(const std::string& filename, bool assign_weights
     all_vertices.clear();
     all_vertices.shrink_to_fit();
 
-    // Remap and symmetrize
+    // Random permutation of vertex IDs (Buluç et al. SC'11 §4.4): scrambles
+    // skewed-degree vertices across rank boundaries so 1D/2D distributions get
+    // balanced m_local. Fixed seed for reproducibility.
+    std::vector<int64_t> perm(n_global);
+    std::iota(perm.begin(), perm.end(), 0);
+    {
+        std::mt19937 rng(42);
+        std::shuffle(perm.begin(), perm.end(), rng);
+    }
+
+    // Remap (original → compact) then permute (compact → shuffled), then symmetrize.
     size_t orig = raw_edges.size();
     raw_edges.reserve(orig * 2);
     for (size_t i = 0; i < orig; i++) {
-        int64_t u = remap[raw_edges[i].first];
-        int64_t v = remap[raw_edges[i].second];
+        int64_t u = perm[remap[raw_edges[i].first]];
+        int64_t v = perm[remap[raw_edges[i].second]];
         raw_edges[i] = {u, v};
         raw_edges.push_back({v, u});
     }
@@ -375,5 +387,44 @@ void print_graph_stats(const CSRGraph& g, MPI_Comm comm) {
                    rank, (long)g.vertex_start, (long)g.vertex_end, (long)g.m_local);
             fflush(stdout);
         }
+    }
+}
+
+void print_graph_stats(const CSRGraph2D& g, MPI_Comm comm) {
+    int rank, p;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &p);
+
+    // Gather m_local from every rank to compute min/max/avg/std-dev.
+    std::vector<int64_t> all_m;
+    if (rank == 0) all_m.resize(p);
+    MPI_Gather(&g.m_local, 1, MPI_INT64_T,
+               all_m.data(), 1, MPI_INT64_T, 0, comm);
+
+    if (rank == 0) {
+        int64_t mn = INT64_MAX, mx = 0, sum = 0;
+        for (int64_t v : all_m) {
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+            sum += v;
+        }
+        double avg = (double)sum / p;
+        double sq = 0;
+        for (int64_t v : all_m) {
+            double d = (double)v - avg;
+            sq += d * d;
+        }
+        double stddev = (p > 0) ? std::sqrt(sq / p) : 0.0;
+
+        printf("Graph2D: n=%ld vertices, m=%ld edges, grid=%dx%d\n",
+               (long)g.n_global, (long)g.m_global, g.grid_rows, g.grid_cols);
+        printf("Tile m_local: min=%ld  max=%ld  avg=%.0f  stddev=%.0f  imbalance=%.2fx\n",
+               (long)mn, (long)mx, avg, stddev, (mn > 0) ? (double)mx / mn : 0.0);
+        for (int r = 0; r < p; r++) {
+            int pr = r / g.grid_cols, pc = r % g.grid_cols;
+            printf("  rank %d (pr=%d pc=%d): m_local=%ld\n",
+                   r, pr, pc, (long)all_m[r]);
+        }
+        fflush(stdout);
     }
 }

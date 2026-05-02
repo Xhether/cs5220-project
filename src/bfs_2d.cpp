@@ -21,6 +21,9 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm,
     if (g.grid_rows != g.grid_cols)
         throw std::runtime_error("bfs_2d: requires a square processor grid (grid_rows == grid_cols)");
 
+    // Sync all ranks to the same start point — otherwise per-rank arrival skew
+    // gets attributed to compute time on whichever rank was earliest.
+    MPI_Barrier(comm);
     double t_total_start = MPI_Wtime();
     double t_comm = 0.0;
 
@@ -203,35 +206,48 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm,
 
     double t_total = MPI_Wtime() - t_total_start;
 
-    // Reduce all timers to max across ranks
-    double vals[8] = { t_total, t_comm, t_csc_build, t_termcheck,
-                       t_transpose, t_expand, t_spmv, t_fold };
-    double maxv[8] = {};
-    MPI_Reduce(vals, maxv, 8, MPI_DOUBLE, MPI_MAX, 0, comm);
+    // Per-rank derived quantities — keeping these *local* so the MAX reduce
+    // finds the actual slowest rank, not a phantom max-of-maxes.
+    double t_compute_local     = t_total - t_comm;
+    double t_phases_local      = t_csc_build + t_termcheck + t_transpose
+                               + t_expand    + t_spmv      + t_fold + t_mask;
+    double t_unaccounted_local = t_total - t_phases_local;
+
+    // Reduce all timers to max across ranks. Each phase max is independent
+    // (could come from different ranks) — informative for finding the slowest
+    // rank in each phase. compute and unaccounted are reduced as already-local
+    // quantities so they represent a single rank's experience.
+    double vals[10] = { t_total, t_comm, t_compute_local, t_unaccounted_local,
+                        t_csc_build, t_termcheck, t_transpose,
+                        t_expand, t_spmv, t_fold };
+    double maxv[10] = {};
+    MPI_Reduce(vals, maxv, 10, MPI_DOUBLE, MPI_MAX, 0, comm);
     double max_mask = 0;
     MPI_Reduce(&t_mask, &max_mask, 1, MPI_DOUBLE, MPI_MAX, 0, comm);
 
     if (rank == 0) {
-        double max_total   = maxv[0];
-        double max_comm    = maxv[1];
-        double max_csc     = maxv[2];
-        double max_term    = maxv[3];
-        double max_trans   = maxv[4];
-        double max_expand  = maxv[5];
-        double max_spmv    = maxv[6];
-        double max_fold    = maxv[7];
+        double max_total       = maxv[0];
+        double max_comm        = maxv[1];
+        double max_compute     = maxv[2];
+        double max_unaccounted = maxv[3];
+        double max_csc         = maxv[4];
+        double max_term        = maxv[5];
+        double max_trans       = maxv[6];
+        double max_expand      = maxv[7];
+        double max_spmv        = maxv[8];
+        double max_fold        = maxv[9];
         fprintf(stderr,
             "[bfs2d phases] csc_build=%.4f termcheck=%.4f transpose=%.4f"
-            " expand=%.4f spmv=%.4f fold=%.4f mask=%.4f"
+            " expand=%.4f spmv=%.4f fold=%.4f mask=%.4f unaccounted=%.4f"
             " | total=%.4f comm=%.4f compute=%.4f\n",
             max_csc, max_term, max_trans,
-            max_expand, max_spmv, max_fold, max_mask,
-            max_total, max_comm, max_total - max_comm);
+            max_expand, max_spmv, max_fold, max_mask, max_unaccounted,
+            max_total, max_comm, max_compute);
 
         if (timing) {
             timing->total_time   = max_total;
             timing->comm_time    = max_comm;
-            timing->compute_time = max_total - max_comm;
+            timing->compute_time = max_compute;
         }
     }
 

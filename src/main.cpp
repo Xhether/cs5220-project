@@ -19,6 +19,7 @@
 static void usage(const char* prog, std::ostream& out) {
     out << "Usage:\n"
         << "  " << prog << " <graph_file> stats1d [weighted]\n"
+        << "  " << prog << " <graph_file> stats2d\n"
         << "  " << prog << " <graph_file> bfs1d <source> [--lcc-info <file>] [--output <path>] [--no-output]\n"
         << "  " << prog << " <graph_file> bfs2d <source> [--lcc-info <file>] [--output <path>] [--no-output]\n";
 }
@@ -97,6 +98,20 @@ static int run_stats1d(const std::string& filename, int rank, int argc, char** a
     CSRGraph full;
     if (rank == 0) full = load_snap_graph_serial(filename, weighted);
     CSRGraph g = distribute_graph_1d(full, MPI_COMM_WORLD);
+    print_graph_stats(g, MPI_COMM_WORLD);
+    return 0;
+}
+
+static int run_stats2d(const std::string& filename, int rank, int p) {
+    int R = (int)std::lround(std::sqrt((double)p));
+    if (R * R != p) {
+        if (rank == 0)
+            std::cerr << "Error: stats2d requires a square number of ranks (got " << p << ")\n";
+        return 1;
+    }
+    CSRGraph full;
+    if (rank == 0) full = load_snap_graph_serial(filename, false);
+    CSRGraph2D g = distribute_graph_2d(full, R, R, MPI_COMM_WORLD);
     print_graph_stats(g, MPI_COMM_WORLD);
     return 0;
 }
@@ -297,6 +312,8 @@ int main(int argc, char** argv) {
     try {
         if (mode == "stats1d")
             ret = run_stats1d(filename, rank, argc, argv);
+        else if (mode == "stats2d")
+            ret = run_stats2d(filename, rank, p);
         else if (mode == "bfs1d")
             ret = run_bfs1d(filename, rank, p, argc, argv);
         else if (mode == "bfs2d")
