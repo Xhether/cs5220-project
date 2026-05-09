@@ -90,4 +90,7 @@ inline const double* local_weights_ptr(const CSRGraph& g, int64_t local_v) {
 // Prints per-rank stats: vertex range, edge count, and min/max/avg local degree.
 void print_graph_stats(const CSRGraph& g, MPI_Comm comm);
 
+// 2D version: prints per-tile m_local plus min/max/avg/stddev/imbalance.
+void print_graph_stats(const CSRGraph2D& g, MPI_Comm comm);
+
 #endif

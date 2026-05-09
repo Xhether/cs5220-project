@@ -1,6 +1,7 @@
 #include "bfs_2d.h"
 #include "mpi_utils.h"
 
+#include <cstdio>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -11,13 +12,29 @@ void bfs_2d_vec_range(const CSRGraph2D& g, int64_t* vec_start, int64_t* vec_end)
     *vec_end   = g.row_start + ((int64_t)(g.pc + 1) * row_band_size) / g.grid_cols;
 }
 
-std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) {
+std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm,
+                            BFSTiming* timing) {
     int rank, p;
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &p);
 
     if (g.grid_rows != g.grid_cols)
         throw std::runtime_error("bfs_2d: requires a square processor grid (grid_rows == grid_cols)");
+
+    // Sync all ranks to the same start point — otherwise per-rank arrival skew
+    // gets attributed to compute time on whichever rank was earliest.
+    MPI_Barrier(comm);
+    double t_total_start = MPI_Wtime();
+    double t_comm = 0.0;
+
+    // Per-phase accumulators
+    double t_csc_build = 0.0;
+    double t_termcheck = 0.0;
+    double t_transpose = 0.0;
+    double t_expand    = 0.0;
+    double t_spmv      = 0.0;
+    double t_fold      = 0.0;
+    double t_mask      = 0.0;
 
     const int R = g.grid_rows;       // == grid_cols
     const int pr = g.pr;
@@ -37,8 +54,7 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
     const int64_t col_band_size = g.col_end - g.col_start;
 
     // ── Build local CSC of the tile ──────────────────────────────────────────
-    // csc_offsets[v_local + 1] − csc_offsets[v_local] = number of rows u_local
-    // with edge (u_local, v_local) in this tile. csc_rows holds those u_local's.
+    double t0_csc = MPI_Wtime();
     std::vector<int64_t> csc_offsets(col_band_size + 1, 0);
     for (int64_t k = 0; k < g.m_local; k++) {
         int64_t v_local = g.neighbors[k] - g.col_start;
@@ -57,6 +73,7 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
             }
         }
     }
+    t_csc_build = MPI_Wtime() - t0_csc;
 
     // ── Initial state ────────────────────────────────────────────────────────
     std::vector<int64_t> parents(n_vec_local, -1);
@@ -69,11 +86,22 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
     // Transpose partner: pairwise swap (pr,pc) ↔ (pc,pr). Diagonal ranks are self-partners.
     const int partner_rank = pc * R + pr;
 
+    // Per-level scratch space, reused across iterations. t_parents is kept
+    // dense for O(1) "first claim wins" checks during SpMSV, but only entries
+    // recorded in t_discovered are touched, so reset cost is O(frontier size)
+    // rather than O(n_local_rows) — matters for high-diameter graphs.
+    std::vector<int64_t> t_parents(g.n_local_rows, -1);
+    std::vector<int64_t> t_discovered;
+
     while (true) {
         // ── Termination: any frontier non-empty? ─────────────────────────────
         int64_t local_fsize  = (int64_t)frontier.size();
         int64_t global_fsize = 0;
+        double tc1 = MPI_Wtime();
         MPI_Allreduce(&local_fsize, &global_fsize, 1, MPI_INT64_T, MPI_SUM, comm);
+        double dt = MPI_Wtime() - tc1;
+        t_comm      += dt;
+        t_termcheck += dt;
         if (global_fsize == 0) break;
 
         // ── Step 1: TransposeVector — pairwise swap (i,j) ↔ (j,i) ────────────
@@ -83,6 +111,7 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
         } else {
             int local_size = (int)frontier.size();
             int partner_size = 0;
+            tc1 = MPI_Wtime();
             MPI_Sendrecv(&local_size,   1, MPI_INT, partner_rank, 0,
                          &partner_size, 1, MPI_INT, partner_rank, 0,
                          comm, MPI_STATUS_IGNORE);
@@ -90,11 +119,15 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
             MPI_Sendrecv(frontier.data(),     local_size,   MPI_INT64_T, partner_rank, 1,
                          f_transposed.data(), partner_size, MPI_INT64_T, partner_rank, 1,
                          comm, MPI_STATUS_IGNORE);
+            dt = MPI_Wtime() - tc1;
+            t_comm      += dt;
+            t_transpose += dt;
         }
 
-        // ── Step 2: Allgatherv on col_comm → fi (full col band j) ────────────
+        // ── Step 2: Allgather + Allgatherv on col_comm → fi ──────────────────
         int local_count = (int)f_transposed.size();
         std::vector<int> ag_counts(R), ag_displs(R);
+        tc1 = MPI_Wtime();
         MPI_Allgather(&local_count, 1, MPI_INT,
                       ag_counts.data(), 1, MPI_INT, col_comm);
         int total_ag = 0;
@@ -106,33 +139,33 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
         MPI_Allgatherv(f_transposed.data(), local_count, MPI_INT64_T,
                        fi.data(), ag_counts.data(), ag_displs.data(), MPI_INT64_T,
                        col_comm);
+        dt = MPI_Wtime() - tc1;
+        t_comm   += dt;
+        t_expand += dt;
 
         // ── Step 3: Local SpMSV (column-driven, sparse accumulator) ──────────
-        // For each frontier vertex v, walk its column in the local CSC and
-        // claim each row u as discovered with parent v (first claim wins).
-        std::vector<int64_t> t_parents(g.n_local_rows, -1);
+        tc1 = MPI_Wtime();
+        t_discovered.clear();
         for (int64_t v : fi) {
             int64_t v_local = v - g.col_start;
             int64_t beg = csc_offsets[v_local];
             int64_t end = csc_offsets[v_local + 1];
             for (int64_t k = beg; k < end; k++) {
                 int64_t u_local = csc_rows[k];
-                if (t_parents[u_local] == -1)
+                if (t_parents[u_local] == -1) {
                     t_parents[u_local] = v;
+                    t_discovered.push_back(u_local);
+                }
             }
         }
+        t_spmv += MPI_Wtime() - tc1;
 
-        // ── Step 4: Alltoallv along row_comm — send (u, parent) to u's owner ─
-        // Each pair is two consecutive int64s in the bucket; the underlying
-        // SendBuffer counts elements (so 2 per pair).
+        // ── Step 4: Build row_buckets + alltoallv on row_comm ─────────────────
+        tc1 = MPI_Wtime();
         std::vector<std::vector<int64_t>> row_buckets(R);
-        for (int64_t u_local = 0; u_local < g.n_local_rows; u_local++) {
+        for (int64_t u_local : t_discovered) {
             int64_t parent = t_parents[u_local];
-            if (parent == -1) continue;
             int64_t u = g.row_start + u_local;
-            // Invert the pc-partition (pc*size)/R with an adjust loop — a plain
-            // (offset*R)/size undershoots on exact boundary vertices. Mirrors
-            // graph_utils.cpp:owner_of.
             int64_t off = u - g.row_start;
             int j_dest = (int)((off * (int64_t)R) / row_band_size);
             if (j_dest < 0) j_dest = 0;
@@ -142,9 +175,15 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
             row_buckets[j_dest].push_back(u);
             row_buckets[j_dest].push_back(parent);
         }
+        // Sparse reset: only clear the entries we touched this level.
+        for (int64_t u_local : t_discovered) t_parents[u_local] = -1;
         std::vector<int64_t> recv_pairs = mpi_utils::alltoallv_exchange(row_buckets, row_comm);
+        dt = MPI_Wtime() - tc1;
+        t_comm += dt;
+        t_fold  += dt;
 
         // ── Step 5: Mask + update ────────────────────────────────────────────
+        tc1 = MPI_Wtime();
         std::vector<int64_t> new_frontier;
         new_frontier.reserve(recv_pairs.size() / 2);
         for (size_t i = 0; i + 1 < recv_pairs.size(); i += 2) {
@@ -157,12 +196,60 @@ std::vector<int64_t> bfs_2d(const CSRGraph2D& g, int64_t source, MPI_Comm comm) 
                 new_frontier.push_back(u);
             }
         }
+        t_mask += MPI_Wtime() - tc1;
 
         frontier = std::move(new_frontier);
     }
 
     MPI_Comm_free(&row_comm);
     MPI_Comm_free(&col_comm);
+
+    double t_total = MPI_Wtime() - t_total_start;
+
+    // Per-rank derived quantities — keeping these *local* so the MAX reduce
+    // finds the actual slowest rank, not a phantom max-of-maxes.
+    double t_compute_local     = t_total - t_comm;
+    double t_phases_local      = t_csc_build + t_termcheck + t_transpose
+                               + t_expand    + t_spmv      + t_fold + t_mask;
+    double t_unaccounted_local = t_total - t_phases_local;
+
+    // Reduce all timers to max across ranks. Each phase max is independent
+    // (could come from different ranks) — informative for finding the slowest
+    // rank in each phase. compute and unaccounted are reduced as already-local
+    // quantities so they represent a single rank's experience.
+    double vals[10] = { t_total, t_comm, t_compute_local, t_unaccounted_local,
+                        t_csc_build, t_termcheck, t_transpose,
+                        t_expand, t_spmv, t_fold };
+    double maxv[10] = {};
+    MPI_Reduce(vals, maxv, 10, MPI_DOUBLE, MPI_MAX, 0, comm);
+    double max_mask = 0;
+    MPI_Reduce(&t_mask, &max_mask, 1, MPI_DOUBLE, MPI_MAX, 0, comm);
+
+    if (rank == 0) {
+        double max_total       = maxv[0];
+        double max_comm        = maxv[1];
+        double max_compute     = maxv[2];
+        double max_unaccounted = maxv[3];
+        double max_csc         = maxv[4];
+        double max_term        = maxv[5];
+        double max_trans       = maxv[6];
+        double max_expand      = maxv[7];
+        double max_spmv        = maxv[8];
+        double max_fold        = maxv[9];
+        fprintf(stderr,
+            "[bfs2d phases] csc_build=%.4f termcheck=%.4f transpose=%.4f"
+            " expand=%.4f spmv=%.4f fold=%.4f mask=%.4f unaccounted=%.4f"
+            " | total=%.4f comm=%.4f compute=%.4f\n",
+            max_csc, max_term, max_trans,
+            max_expand, max_spmv, max_fold, max_mask, max_unaccounted,
+            max_total, max_comm, max_compute);
+
+        if (timing) {
+            timing->total_time   = max_total;
+            timing->comm_time    = max_comm;
+            timing->compute_time = max_compute;
+        }
+    }
 
     return parents;
 }

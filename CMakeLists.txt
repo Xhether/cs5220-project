@@ -51,3 +51,13 @@ target_compile_options(serial_reference PRIVATE
     -Wall
     -Wextra
 )
+
+# Serial preprocessing: writes LCC info file (n_lcc, m_lcc, 16 source vertices)
+add_executable(serial_preprocess
+    reference/preprocess.cpp
+)
+target_compile_options(serial_preprocess PRIVATE
+    -O3
+    -Wall
+    -Wextra
+)
