@@ -21,8 +21,6 @@ Example:
         --out sssp_lj_scaling.png --graph com-LiveJournal
 """
 
-from __future__ import annotations
-
 import argparse
 import sys
 from pathlib import Path
@@ -39,7 +37,7 @@ ALGO_STYLE = {
 }
 
 
-def load(csv_path: Path) -> pd.DataFrame:
+def load(csv_path):
     df = pd.read_csv(csv_path)
     required = {"algorithm", "num_processes", "avg_teps"}
     missing = required - set(df.columns)
@@ -49,7 +47,7 @@ def load(csv_path: Path) -> pd.DataFrame:
     return df
 
 
-def annotate_peak(ax, sub: pd.DataFrame, color: str) -> None:
+def annotate_peak(ax, sub, color):
     """Mark the (rank, TEPS) at which TEPS is maximum and write the rank."""
     if sub.empty:
         return
@@ -68,7 +66,7 @@ def annotate_peak(ax, sub: pd.DataFrame, color: str) -> None:
     )
 
 
-def plot(df: pd.DataFrame, title: str, out_path: Path) -> None:
+def plot(df, title, out_path):
     fig, ax = plt.subplots(figsize=(10, 6))
 
     for algo, sub in df.groupby("algorithm"):
@@ -103,7 +101,7 @@ def plot(df: pd.DataFrame, title: str, out_path: Path) -> None:
     print(f"wrote {out_path}")
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("csv", type=Path, help="Path to benchmark CSV")
