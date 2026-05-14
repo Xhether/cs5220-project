@@ -32,10 +32,10 @@ import pandas as pd
 
 # Stable colors per algorithm so 1D/2D line up across BFS and SSSP plots.
 ALGO_STYLE = {
-    "bfs1d":  {"color": "#1f77b4", "label": "1D BFS",  "marker": "s"},
-    "bfs2d":  {"color": "#d62728", "label": "2D BFS",  "marker": "o"},
-    "sssp1d": {"color": "#1f77b4", "label": "1D SSSP", "marker": "s"},
-    "sssp2d": {"color": "#d62728", "label": "2D SSSP", "marker": "o"},
+    "bfs1d":  {"color": "#d62728", "label": "1D BFS",  "marker": "o"},
+    "bfs2d":  {"color": "#1f77b4", "label": "2D BFS",  "marker": "s"},
+    "sssp1d": {"color": "#d62728", "label": "1D SSSP", "marker": "o"},
+    "sssp2d": {"color": "#1f77b4", "label": "2D SSSP", "marker": "s"},
 }
 
 
